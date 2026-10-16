@@ -79,7 +79,8 @@ until the transaction executes and then waits for the on-chain receipt. The page
 stage (awaiting signatures, awaiting execution) and links to the transaction in the Safe web UI.
 
 To test locally, run `pnpm --filter @interfold/dashboard dev` and add `http://localhost:5173` as a
-custom app in a Sepolia Safe. The Vite dev server sends the CORS header by default.
+custom app in a Sepolia Safe. The dev server in `vite.config.ts` allows the Safe origin, because
+Vite only allows localhost origins by default.
 
 Only `VITE_BONDING_REGISTRY_ADDRESS` is configured. The ciphernode bond token, ticket wrapper,
 ticket underlying, bond size, ticket price, minimum tickets, and exit delay are all read back from

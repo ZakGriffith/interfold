@@ -24,6 +24,9 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       port: 5173,
+      // The Safe web UI fetches /manifest.json cross-origin when a local build is
+      // added as a custom Safe App. Vite's default CORS allows localhost only.
+      cors: { origin: 'https://app.safe.global' },
     },
   }
 })
