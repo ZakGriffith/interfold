@@ -242,7 +242,7 @@ It has three views:
 | -------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | **E3 inspector**     | `#inspector`                                                | Each E3 on the network: request, committee, key generation, input window, compute, decryption, publication, failure, fees, and the event log. |
 | **CRISP**            | `#crisp`                                                    | The CRISP polls of the network and their stages. The view only shows data.                                                                    |
-| **Run a ciphernode** | [`#operator`](https://dashboard.theinterfold.com/#operator) | An interactive operator guide that sends transactions from a browser wallet.                                                                  |
+| **Run a ciphernode** | [`#operator`](https://dashboard.theinterfold.com/#operator) | An interactive operator guide that sends transactions from a browser wallet or a Safe.                                                        |
 
 The operator guide is the only view that writes to the chain. It reads the bond size, the ticket
 price, the minimum ticket count, and the exit delay from `BondingRegistry`. It has five steps:
@@ -257,6 +257,24 @@ The guide simulates each transaction before the wallet prompt, so a contract err
 `NotBondOwner`, shows before you sign. The guide sets up the on-chain position only. The ciphernode
 must run with the same operator key. See [Registration](/operate/registration) for the CLI
 procedure.
+
+### Use a Safe as the bond owner
+
+The operator guide is also a [Safe App](https://github.com/safe-global/safe-apps-sdk). A Safe can
+hold the collateral and buy the tickets, because steps 3 to 5 only check that the sender is the bond
+owner. A Safe cannot be the operator key, because the ciphernode signs with a plain key. Step 2
+stays with the operator key.
+
+1. In a browser wallet that holds the operator key, open the guide, enter the Safe address as the
+   bond owner, and send `setBondOwner`.
+2. In the Safe web UI, open **Apps**, choose **My custom apps**, and add the dashboard URL for the
+   network of the Safe. The Safe must be on the same network as the dashboard.
+3. Open the app from the Safe. The guide connects to the Safe on load and shows the number of owner
+   signatures that each transaction needs. Enter the operator key, then complete steps 3 to 5.
+
+Each transaction waits in the Safe queue until enough owners confirm it. The guide follows the queue
+and continues when the transaction executes. The link under the steps opens the transaction in the
+Safe web UI, where the other owners confirm it.
 
 ## Next steps
 

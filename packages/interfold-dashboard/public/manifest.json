@@ -1,0 +1,5 @@
+{
+  "name": "Interfold ciphernode operator",
+  "description": "Bond, register, and buy tickets for an Interfold ciphernode from a Safe.",
+  "iconPath": "safe-icon.png"
+}

@@ -5,11 +5,14 @@
 // or FITNESS FOR A PARTICULAR PURPOSE.
 // Minimal EIP-1193 wallet connection. The dashboard deliberately avoids a
 // connector library (wagmi/rainbowkit): the operator guide only needs one
-// injected provider, one chain, and a handful of writes.
+// provider, one chain, and a handful of writes. The provider is the injected
+// browser wallet, or the hosting Safe when the page runs as a Safe App.
 
 import { createWalletClient, custom, type Address, type Hash, type WalletClient } from 'viem'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CHAIN, publicClient } from './chain'
+import { explorerTx } from './links'
+import { detectSafe, safeTxUrl, waitForSafeTx, type SafeContext, type SafeTxStage } from './safe'
 
 type Eip1193Provider = {
   request: (args: { method: string; params?: unknown[] | object }) => Promise<any>
@@ -17,9 +20,20 @@ type Eip1193Provider = {
   removeListener?: (event: string, handler: (...args: any[]) => void) => void
 }
 
+type ProviderSource = { kind: 'injected'; provider: Eip1193Provider } | { kind: 'safe'; provider: Eip1193Provider; safe: SafeContext }
+
 export function getProvider(): Eip1193Provider | null {
   const injected = (globalThis as any).window?.ethereum
   return injected ?? null
+}
+
+// A Safe host answers within the detection timeout; any other page, embedded or
+// not, falls through to the injected wallet.
+async function resolveProvider(): Promise<ProviderSource | null> {
+  const safe = await detectSafe()
+  if (safe) return { kind: 'safe', provider: safe.provider as unknown as Eip1193Provider, safe }
+  const injected = getProvider()
+  return injected ? { kind: 'injected', provider: injected } : null
 }
 
 const toChainId = (value: unknown): number | null => {
@@ -28,7 +42,19 @@ const toChainId = (value: unknown): number | null => {
   return null
 }
 
+/** A sent transaction that the page is still waiting on. */
+export type PendingTx = {
+  /** The on-chain hash, or the Safe transaction hash while the Safe holds it. */
+  hash: Hash
+  /** `mining` for an on-chain hash; the Safe queue stages otherwise. */
+  stage: 'mining' | SafeTxStage
+  /** Where to watch it: the block explorer, or the Safe transaction page. */
+  url: string
+}
+
 export type Wallet = {
+  /** True until the page knows whether a Safe hosts it. */
+  detecting: boolean
   available: boolean
   address: Address | null
   chainId: number | null
@@ -39,16 +65,36 @@ export type Wallet = {
   switchChain: () => Promise<void>
   /** Wallet client bound to the connected account, or null when disconnected. */
   client: WalletClient | null
+  /** The hosting Safe, or null when the wallet is an injected provider. */
+  safe: { address: Address; threshold: number; owners: number; chainName: string } | null
+  /** Wait for a sent transaction and return its on-chain hash. Rejects on revert. */
+  confirm: (hash: Hash) => Promise<Hash>
+  pending: PendingTx | null
 }
 
 export function useWallet(): Wallet {
-  const provider = useMemo(() => getProvider(), [])
+  // `undefined` while detecting, `null` when no provider exists.
+  const [source, setSource] = useState<ProviderSource | null | undefined>(undefined)
   const [address, setAddress] = useState<Address | null>(null)
   const [chainId, setChainId] = useState<number | null>(null)
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pending, setPending] = useState<PendingTx | null>(null)
 
-  // Pick up an already-authorized account on mount without prompting.
+  useEffect(() => {
+    let cancelled = false
+    void resolveProvider().then((resolved) => {
+      if (!cancelled) setSource(resolved)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const provider = source?.provider ?? null
+
+  // Pick up an already-authorized account on mount without prompting. A Safe
+  // always reports its own address here, so a Safe App connects on load.
   useEffect(() => {
     if (!provider) return undefined
     let cancelled = false
@@ -97,7 +143,8 @@ export function useWallet(): Wallet {
   }, [provider])
 
   const switchChain = useCallback(async () => {
-    if (!provider) return
+    // A Safe lives on one chain; the operator opens the app from a Safe on the right one.
+    if (!provider || source?.kind === 'safe') return
     setError(null)
     const hexId = `0x${CHAIN.id.toString(16)}`
     try {
@@ -128,15 +175,48 @@ export function useWallet(): Wallet {
       }
       setError(walletErrorMessage(e))
     }
-  }, [provider])
+  }, [provider, source])
+
+  const confirm = useCallback(
+    async (hash: Hash): Promise<Hash> => {
+      try {
+        if (source?.kind === 'safe') {
+          const { safe } = source
+          const url = safeTxUrl(safe, hash)
+          setPending({ hash, stage: 'awaiting-confirmations', url })
+          const onChain = await waitForSafeTx(safe.sdk.txs, hash, (stage) => setPending({ hash, stage, url }))
+          await confirmTx(onChain)
+          return onChain
+        }
+        setPending({ hash, stage: 'mining', url: explorerTx(hash) })
+        await confirmTx(hash)
+        return hash
+      } finally {
+        setPending(null)
+      }
+    },
+    [source],
+  )
 
   const client = useMemo(() => {
     if (!provider || !address) return null
     return createWalletClient({ account: address, chain: CHAIN, transport: custom(provider) })
   }, [provider, address])
 
+  const safe = useMemo(() => {
+    if (source?.kind !== 'safe') return null
+    const { info, chain } = source.safe
+    return {
+      address: info.safeAddress as Address,
+      threshold: info.threshold,
+      owners: info.owners.length,
+      chainName: chain.chainName,
+    }
+  }, [source])
+
   return {
-    available: provider !== null,
+    detecting: source === undefined,
+    available: Boolean(provider),
     address,
     chainId,
     onCorrectChain: chainId === CHAIN.id,
@@ -145,6 +225,9 @@ export function useWallet(): Wallet {
     connect,
     switchChain,
     client,
+    safe,
+    confirm,
+    pending,
   }
 }
 
@@ -163,8 +246,8 @@ export function walletErrorMessage(e: unknown): string {
   return 'Something went wrong. Check the wallet and try again.'
 }
 
-/** Wait for a submitted transaction and reject when it reverted on-chain. */
-export async function confirmTx(hash: Hash): Promise<void> {
+/** Wait for a submitted on-chain transaction and reject when it reverted. */
+async function confirmTx(hash: Hash): Promise<void> {
   const receipt = await publicClient.waitForTransactionReceipt({ hash })
   if (receipt.status !== 'success') throw new Error('Transaction reverted on-chain.')
 }

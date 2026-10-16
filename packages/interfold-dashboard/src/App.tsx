@@ -21,6 +21,7 @@ import { formatE3Id } from './lib/pollMeta'
 import { LINKS, explorerAddress } from './lib/links'
 import { CONTRACTS, NETWORK_NAME } from './lib/chain'
 import { isE3Active, solidityStageToUiIdx, type E3FullDetails, type E3Summary } from './lib/e3'
+import { inIframe } from './lib/safe'
 
 function Header({ density, view, onNav }: { density: string; view: string; onNav: (id: string) => void }) {
   const link = (id: string, label: string) => (
@@ -139,12 +140,14 @@ function SiteFooter() {
 const DENSITY = 'comfortable'
 
 // Linkable views. Anything else in the hash falls back to the inspector, so a
-// stale or hand-typed fragment can never render a blank page.
+// stale or hand-typed fragment can never render a blank page. A Safe App loads
+// the bare origin, and the operator guide is the only view a Safe is there for.
 const VIEWS = ['inspector', 'crisp', 'operator']
 
 function viewFromHash(): string {
   const id = globalThis.location?.hash.replace(/^#/, '') ?? ''
-  return VIEWS.includes(id) ? id : 'inspector'
+  if (VIEWS.includes(id)) return id
+  return inIframe() ? 'operator' : 'inspector'
 }
 
 // Derive the poll-card state from the UI stage + ballot count. Specifically,

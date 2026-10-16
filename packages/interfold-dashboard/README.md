@@ -46,8 +46,9 @@ them against `deployments/manifest.json` for the target network.
 ### Operator guide (write path)
 
 `src/Operator.tsx` is the only page that sends transactions. It talks to `BondingRegistry` through a
-minimal injected-wallet connector (`src/lib/wallet.ts`) — no wagmi/rainbowkit dependency, since the
-guide needs one provider, one chain, and five writes.
+minimal EIP-1193 connector (`src/lib/wallet.ts`) — no wagmi/rainbowkit dependency, since the guide
+needs one provider, one chain, and five writes. The provider is the injected browser wallet, or the
+hosting Safe when the page runs as a Safe App (see below).
 
 The operator key and the bond owner are separate addresses. The operator key is the hot key the node
 signs with; the bond owner is the wallet that funds and controls the collateral. They may be the
@@ -63,6 +64,22 @@ same wallet. The sequence the guide enforces is:
 Steps 2–4 must come from the bond owner; the page detects the connected wallet and disables actions
 it cannot send. Every write is simulated first (`simulateAndWrite`) so the registry's typed reverts
 (for example `NotBondOwner`) surface before the wallet prompt.
+
+#### Safe App
+
+The page is a [Safe App](https://github.com/safe-global/safe-apps-sdk): `public/manifest.json`
+describes it, and `vercel.json` serves the manifest with the CORS header that the Safe web UI
+requires. An operator adds the dashboard URL under **My custom apps** in a Safe on the same network.
+
+Inside Safe (`src/lib/safe.ts`), the page runs in an iframe and the Safe Apps SDK is the provider.
+The Safe can only be the bond owner, so step 1 (`setBondOwner`) still comes from the operator key in
+a browser wallet, with the Safe address as the bond owner. `eth_sendTransaction` returns a Safe
+transaction hash, not an on-chain hash, so `useWallet().confirm` polls the Safe transaction service
+until the transaction executes and then waits for the on-chain receipt. The page shows the queue
+stage (awaiting signatures, awaiting execution) and links to the transaction in the Safe web UI.
+
+To test locally, run `pnpm --filter @interfold/dashboard dev` and add `http://localhost:5173` as a
+custom app in a Sepolia Safe. The Vite dev server sends the CORS header by default.
 
 Only `VITE_BONDING_REGISTRY_ADDRESS` is configured. The ciphernode bond token, ticket wrapper,
 ticket underlying, bond size, ticket price, minimum tickets, and exit delay are all read back from

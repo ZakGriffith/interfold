@@ -19,7 +19,7 @@ import Loader from './Loader'
 import { CONTRACTS, IS_TESTNET, NETWORK_NAME, bondingRegistryAbi, faucetAbi } from './lib/chain'
 import { LINKS, explorerAddress, explorerTx } from './lib/links'
 import { ZERO_ADDRESS, simulateAndWrite, useBonding, type BondingConfig, type OperatorStatus } from './lib/bonding'
-import { confirmTx, useWallet, walletErrorMessage } from './lib/wallet'
+import { useWallet, walletErrorMessage } from './lib/wallet'
 
 const FAUCET_ENABLED = IS_TESTNET && CONTRACTS.Faucet !== ZERO_ADDRESS && CONTRACTS.Faucet.trim() !== ''
 
@@ -134,12 +134,14 @@ export default function Operator() {
   const [ticketCountInput, setTicketCountInput] = useState('')
 
   // Default both address fields to the connected wallet — the single-wallet
-  // setup is the common case, and either field can still be edited.
+  // setup is the common case, and either field can still be edited. A Safe can
+  // only be the bond owner: the node signs with a plain key, so the operator
+  // field stays empty for the operator to fill in.
   useEffect(() => {
     if (!wallet.address) return
-    setOperatorInput((v) => (v.trim() === '' ? wallet.address! : v))
+    if (!wallet.safe) setOperatorInput((v) => (v.trim() === '' ? wallet.address! : v))
     setBondOwnerInput((v) => (v.trim() === '' ? wallet.address! : v))
-  }, [wallet.address])
+  }, [wallet.address, wallet.safe])
 
   const operatorValid = isAddress(operatorInput.trim())
   const operator = operatorValid ? (operatorInput.trim() as Address) : null
@@ -156,9 +158,9 @@ export default function Operator() {
     setBusy(key)
     setTxError(null)
     try {
-      const hash = await send()
-      setLastTx(hash)
-      await confirmTx(hash)
+      // Inside a Safe the sent hash is a Safe transaction hash; `confirm`
+      // returns the on-chain hash once the Safe executes it.
+      setLastTx(await wallet.confirm(await send()))
       refresh()
     } catch (e) {
       setTxError({ key, message: walletErrorMessage(e) })
@@ -218,7 +220,12 @@ export default function Operator() {
   const ticketCost = config && ticketCount ? ticketCount * config.ticketPrice : null
 
   const errFor = (key: string) => (txError?.key === key ? <Note kind='warn'>{txError.message}</Note> : null)
-  const label = (key: string, idle: string) => (busy === key ? 'Confirming…' : idle)
+  const busyLabel = {
+    mining: 'Confirming…',
+    'awaiting-confirmations': 'Awaiting Safe signatures…',
+    'awaiting-execution': 'Awaiting Safe execution…',
+  }[wallet.pending?.stage ?? 'mining']
+  const label = (key: string, idle: string) => (busy === key ? busyLabel : idle)
 
   return (
     <div className='opguide'>
@@ -258,7 +265,9 @@ export default function Operator() {
               lede='Every step below is a transaction. Connect the wallet that will fund the collateral.'
               state={stateOf(0)}
             >
-              {!wallet.available ? (
+              {wallet.detecting ? (
+                <Note>Looking for a wallet…</Note>
+              ) : !wallet.available ? (
                 <Note kind='warn'>No Ethereum wallet detected in this browser. Install one, then reload this page.</Note>
               ) : !wallet.address ? (
                 <>
@@ -270,20 +279,40 @@ export default function Operator() {
               ) : (
                 <>
                   <dl className='dl'>
-                    <dt>Connected</dt>
+                    <dt>{wallet.safe ? 'Connected Safe' : 'Connected'}</dt>
                     <dd>
                       <AddrLink address={wallet.address} />
                     </dd>
+                    {wallet.safe && (
+                      <>
+                        <dt>Signatures</dt>
+                        <dd>
+                          {wallet.safe.threshold} of {wallet.safe.owners} owners
+                        </dd>
+                      </>
+                    )}
                     <dt>Network</dt>
                     <dd>{wallet.onCorrectChain ? NETWORK_NAME : `Wrong network (chain ${wallet.chainId ?? '—'})`}</dd>
                   </dl>
-                  {!wallet.onCorrectChain && (
-                    <>
-                      <Note kind='warn'>Interfold is deployed on {NETWORK_NAME}. Switch networks to continue.</Note>
-                      <button className='btn btn--primary' onClick={() => void wallet.switchChain()}>
-                        Switch to {NETWORK_NAME}
-                      </button>
-                    </>
+                  {!wallet.onCorrectChain &&
+                    (wallet.safe ? (
+                      <Note kind='warn'>
+                        This Safe is on {wallet.safe.chainName}. Interfold is deployed on {NETWORK_NAME}. Open this app from a Safe on{' '}
+                        {NETWORK_NAME}.
+                      </Note>
+                    ) : (
+                      <>
+                        <Note kind='warn'>Interfold is deployed on {NETWORK_NAME}. Switch networks to continue.</Note>
+                        <button className='btn btn--primary' onClick={() => void wallet.switchChain()}>
+                          Switch to {NETWORK_NAME}
+                        </button>
+                      </>
+                    ))}
+                  {wallet.safe && wallet.safe.threshold > 1 && (
+                    <Note>
+                      Each transaction waits in the Safe queue until {wallet.safe.threshold} owners confirm it. This page follows the queue
+                      and moves on when the transaction executes.
+                    </Note>
                   )}
                   {wallet.error && <Note kind='warn'>{wallet.error}</Note>}
                 </>
@@ -328,7 +357,7 @@ export default function Operator() {
                   invalid={operatorInput.trim() !== '' && !operatorValid}
                   hint={operatorInput.trim() !== '' && !operatorValid ? 'Not a valid address.' : 'The address your ciphernode signs with.'}
                   suffix={
-                    wallet.address && !sameAddress(operatorInput, wallet.address) ? (
+                    wallet.address && !wallet.safe && !sameAddress(operatorInput, wallet.address) ? (
                       <button className='btn btn--sm btn--ghost' onClick={() => setOperatorInput(wallet.address!)}>
                         Use connected
                       </button>
@@ -383,7 +412,14 @@ export default function Operator() {
                     <code className='mono'>setBondOwner</code> is sent by the operator key itself — it is how the node authorizes a wallet
                     to post collateral on its behalf.
                   </Note>
-                  {connected && operatorValid && !isOperatorWallet && (
+                  {connected && wallet.safe && (
+                    <Note kind='warn'>
+                      A Safe cannot be the operator key, because the node signs with a plain key. Send this step from the operator key in a
+                      browser wallet, outside Safe, with this Safe ({shortAddr(wallet.safe.address)}) as the bond owner. Then come back here
+                      for the remaining steps.
+                    </Note>
+                  )}
+                  {connected && !wallet.safe && operatorValid && !isOperatorWallet && (
                     <Note kind='warn'>
                       Connect the operator wallet ({shortAddr(operatorInput.trim())}) to sign this step, then switch back to the bond owner
                       for the rest.
@@ -644,16 +680,32 @@ export default function Operator() {
             </StepCard>
           </div>
 
-          {lastTx && (
+          {wallet.pending ? (
             <div className='optx'>
-              Last transaction:{' '}
-              <a className='hash' href={explorerTx(lastTx)} target='_blank' rel='noreferrer'>
-                <span className='mono'>{shortAddr(lastTx)}</span>
+              {wallet.pending.stage === 'mining' ? 'Confirming transaction:' : 'In the Safe queue:'}{' '}
+              <a className='hash' href={wallet.pending.url} target='_blank' rel='noreferrer'>
+                <span className='mono'>{shortAddr(wallet.pending.hash)}</span>
                 <span className='hash__icon' aria-hidden='true'>
                   ↗
                 </span>
               </a>
+              {wallet.pending.stage === 'awaiting-confirmations' && (
+                <span>Waiting for owner signatures in Safe. This page updates when it executes.</span>
+              )}
+              {wallet.pending.stage === 'awaiting-execution' && <span>Enough owners signed. Execute it in Safe to continue.</span>}
             </div>
+          ) : (
+            lastTx && (
+              <div className='optx'>
+                Last transaction:{' '}
+                <a className='hash' href={explorerTx(lastTx)} target='_blank' rel='noreferrer'>
+                  <span className='mono'>{shortAddr(lastTx)}</span>
+                  <span className='hash__icon' aria-hidden='true'>
+                    ↗
+                  </span>
+                </a>
+              </div>
+            )
           )}
 
           <section className='opnext'>
